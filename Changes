@@ -1,0 +1,29 @@
+==================================================
+Changes from 1740-10-08 00:00:00 +0000 to present.
+==================================================
+
+------------------------------------------
+version 0.001 at 2014-07-23 20:52:47 +0000
+------------------------------------------
+
+  Change: b9ece6313e1ae8f43fbf5ad76eac9555ee926c83
+  Author: Torsten Raudssus <torsten@raudss.us>
+  Date : 2014-07-23 22:51:30 +0000
+
+    Fixed rights 
+
+  Change: 44f59215687c7af41a51cbdcfc8c466c23989ff1
+  Author: Torsten Raudssus <torsten@raudss.us>
+  Date : 2014-07-23 22:50:53 +0000
+
+    First just plain convert from script to real CPAN app 
+
+  Change: 2ae0b00b73e04cb645ee64d346be8dacf62cd327
+  Author: Torsten Raudssus <torsten@raudss.us>
+  Date : 2014-07-23 22:26:53 +0000
+
+    initial commit 
+
+================
+End of releases.
+================

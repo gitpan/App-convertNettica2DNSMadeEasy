@@ -1,0 +1,318 @@
+#!/usr/bin/env perl
+# PODNAME: convertNettica2DNSMadeEasy
+# ABSTRACT: Convert Nettica CSV File to DNSMadeEasy API
+
+use strict;
+use warnings;
+ 
+use Text::CSV;
+use REST::Client;
+use Digest::HMAC_SHA1 qw(hmac_sha1_hex);
+use HTTP::Date;
+use JSON;
+
+if (@ARGV != 3) {
+    die "Incorrect parameters.\n  Correct syntax:\nconvertNettica2DNSMadeEasy <CSV_FILE_NAME> <API_KEY> <SECRET_KEY>\n";
+}
+
+my $baseurl = "https://api.dnsmadeeasy.com/V2.0";
+
+my $file = $ARGV[0] or die "Need to get CSV file on the command line\n";
+my $apiKey = $ARGV[1] or die "Need an API KEY\n";
+my $secretKey = $ARGV[2] or die "Need a SECRET Key\n";
+ 
+open my $fh, "<", $file or die "$file: $!";
+my $csv = Text::CSV->new ({
+    binary    => 1, # Allow special character. Always set this
+    auto_diag => 1, # Report irregularities immediately
+    sep_char  => ','    # not really needed as this is the defau
+				  });
+
+# Set header values:
+my $requestDate;
+my $hmac;
+my $fullurl;
+
+# http://api.sandbox.dnsmadeeasy.com/V2.0/dns/managed
+
+#The basic use case
+my $client = REST::Client->new();
+$client->addHeader('x-dnsme-apiKey', $apiKey);
+$client->addHeader('Accept', 'application/json');
+$client->addHeader('content-type', 'application/json');
+my $domainAdded = 0;
+
+my $wdomain = "";
+my $mydomainid = "";
+
+while (my $row = $csv->getline ($fh)) {
+#    print "@$row\n";
+#    print "The domain is: $row->[0]\n";
+#    print "The record name is: $row->[1]\n";
+#    print "The record type is: $row->[2]\n";
+#    print "The record TTL is: $row->[3]\n";
+#    print "The record value is: $row->[4]\n";
+    my $domain = $row->[0];
+    my $recname =  $row->[1];
+    my $rectype = $row->[2];
+    my $recttl = $row->[3];
+    my $recvalue = $row->[4];
+
+
+    my $myLength = length($domain); 
+    if($myLength < 1) {
+	print "oooops!\n";
+	next;
+    }
+
+    if($wdomain ne $domain) {
+	print "Working with a new domain name of $domain.\n\n";
+	sleep 5;
+	$mydomainid = "";
+	print "The domain has changed to: $domain\n";
+	$wdomain = $domain;
+	# API call to create the domain
+	$requestDate = time2str(time);
+	$hmac = hmac_sha1_hex($requestDate, $secretKey);
+	$client->addHeader('x-dnsme-hmac', $hmac);
+	$client->addHeader('x-dnsme-requestDate', $requestDate);
+	$client->setHost($baseurl);
+	my $content = "{\"name\":\"$wdomain\"}";
+	print "the data we will send is $content\n";
+	$client->POST('/dns/managed/',$content);
+
+#	my $response = from_json($client->responseContent());
+
+	if( $client->responseCode() eq '201' ){
+	    my $response = from_json($client->responseContent());
+	    $mydomainid = $response->{'id'};
+	    print $client->responseContent();
+	    print $client->responseCode() . "\n";
+	    print "The output is : $client->responseContent()\n";
+	    print "the domain id is $mydomainid\n";	    
+
+	    $domainAdded = 1;
+	}
+	else {
+	    print "The responseContent is:\n" . $client->responseContent() . "\n\n";
+	    print "Checking $wdomain  already exists\n";
+	    $requestDate = time2str(time);
+	    $hmac = hmac_sha1_hex($requestDate, $secretKey);
+	    $client->addHeader('x-dnsme-hmac', $hmac);
+	    $client->addHeader('x-dnsme-requestDate', $requestDate);
+	    $client->setHost($baseurl);
+	    $client->GET("/dns/managed/name?domainname=$wdomain");
+	    if( $client->responseCode() eq '200' ) {
+		print "Found the domain $wdomain in your account already.\n";
+		my $response = from_json($client->responseContent());
+		$mydomainid = $response->{'id'};
+		$domainAdded = 1;
+	    }
+	    else {
+		print "The domain $wdomain was not able to be added into DNS Made Easy and it was not found.\n";
+		$domainAdded = 0;
+	    }
+	}
+    }
+    if($domainAdded) {
+	my $content = "";
+	if($rectype eq "A") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"$recvalue\",\"type\":\"A\",\"ttl\":$recttl}";
+	}
+	elsif($rectype eq "AAAA") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"$recvalue\",\"type\":\"AAAA\",\"ttl\":$recttl}";
+	}
+	elsif($rectype eq "CNAME") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"" . recValueModifier($recvalue) . "\",\"type\":\"CNAME\",\"ttl\":$recttl}";
+	}
+	elsif ($rectype eq "F") {
+	    my @myHTTPvalues = split(' ', $recvalue);
+	    my $httpType = $myHTTPvalues[0];
+	    my $httpURL = $myHTTPvalues[1];
+	    my $hardlink;
+	    my $redirectType;
+	    if(length($httpType) > 1) {
+		$hardlink = "true";
+		$redirectType = substr($httpType,-1);
+	    }
+	    else {
+		$hardlink = "false";
+		$redirectType = $httpType;
+	    }
+	    if($redirectType eq "1") {
+		$redirectType = "Standard - 302";
+	    }
+	    elsif($redirectType eq "2") {
+		$redirectType = "Hidden Frame Masked";
+	    }
+	    elsif($redirectType eq "3") {
+		$redirectType = "Standard - 301";
+	    }
+	    $content = "{\"name\":\"$recname\",\"value\":\"$httpURL\",\"type\":\"HTTPRED\",\"ttl\":$recttl,\"redirectType\":\"$redirectType\",\"hardLink\":$hardlink}";
+	}
+	elsif ($rectype eq "MX") {
+	    my @myMXvalues = split(' ', $recvalue);
+	    my $mxLevel = $myMXvalues[0];
+	    my $mxValue = $myMXvalues[1];
+	    $content = "{\"name\":\"$recname\",\"mxLevel\":$mxLevel,\"value\":\"" . recValueModifier($mxValue) . "\",\"type\":\"MX\",\"ttl\":$recttl}";
+	}
+	elsif ($rectype eq "NS") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"" . recValueModifier($recvalue) . "\",\"type\":\"NS\",\"ttl\":$recttl}";
+	}
+	elsif ($rectype eq "PTR") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"" . recValueModifier($recvalue) . "\",\"type\":\"PTR\",\"ttl\":$recttl}";
+	    
+	}
+	elsif ($rectype eq "SPF") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"" . recValueModifier($recvalue) . "\",\"type\":\"SPF\",\"ttl\":$recttl}";
+	}
+	elsif ($rectype eq "SRV") {
+	    my @mySRVvalues = split(' ', $recvalue);
+	    my $srvPriority = $mySRVvalues[0];
+	    my $srvWeight = $mySRVvalues[1];
+	    my $srvPort = $mySRVvalues[2];
+	    my $srvValue = $mySRVvalues[3];
+	    $content = "{\"name\":\"$recname\",\"priority\":$srvPriority,\"weight\":$srvWeight,\"port\":$srvPort,\"value\":\"" . recValueModifier($srvValue) . "\",\"type\":\"SRV\",\"ttl\":$recttl}";
+	}
+	elsif ($rectype eq "TXT") {
+	    $content = "{\"name\":\"$recname\",\"value\":\"" . recValueModifier($recvalue) . "\",\"type\":\"TXT\",\"ttl\":$recttl}";
+	}
+	else {
+	    # not recognized
+#	    print "The domain is: $row->[0]\n";
+#	    print "The record name is: $row->[1]\n";
+#	    print "The record type is: $row->[2]\n";
+#	    print "The record TTL is: $row->[3]\n";
+#	    print "The record value is: $row->[4]\n";
+	}
+	if(length($content) > 1) {
+	    # make the API call
+	    $requestDate = time2str(time);
+	    $hmac = hmac_sha1_hex($requestDate, $secretKey);
+	    $client->addHeader('x-dnsme-hmac', $hmac);
+	    $client->addHeader('x-dnsme-requestDate', $requestDate);
+	    $client->setHost($baseurl);
+	    print "the content is: $content\n";
+	    $client->POST("/dns/managed/$mydomainid/records/",$content);
+	    print "We are posting to $baseurl/dns/managed/$mydomainid/records/\n";
+	    print "The reponse is ". $client->responseContent() . "\n\n";
+	    my $record_response = from_json($client->responseContent());
+	    if( $client->responseCode() eq '201' ){
+		print "Record was added successfully!\n";
+	    }
+	    else {
+		print "your record was NOT added properly!\n";
+	    }
+	}
+    }
+    sleep 1;
+}
+    # API call to create the record
+close $fh;
+exit(1);
+
+sub recValueModifier {
+    my ($recvalue) = @_;
+    
+    if($recvalue =~ /(^|\.)$wdomain(\.)?$/) {
+	$recvalue =~ s/(^|\.)$wdomain(\.)?$//;
+    }
+    else {
+	if(!($recvalue =~ /(\.)$/)) {
+	    $recvalue = "$recvalue.";
+	}
+    }
+    return $recvalue;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+convertNettica2DNSMadeEasy - Convert Nettica CSV File to DNSMadeEasy API
+
+=head1 VERSION
+
+version 0.001
+
+=head1 SYNOPSIS
+
+  convertNettica2DNSMadeEasy <CSV_FILE_NAME> <API_KEY> <SECRET_KEY>
+
+=encoding utf8
+
+=head1 RETRIEVING DNS MADE EASY API KEYS
+
+=over 4
+
+=item *
+
+Log into DNS Made Easy L<https://cp.dnsmadeeasy.com/>.
+
+=item *
+
+Click on "Config - Account Information" from the Main Menu.
+
+=item *
+
+Save the API Key and the Secret Key.
+
+=back
+
+=head1 CREATING NETTICA ADVANCED CSV
+
+=over 4
+
+=item *
+
+Log into Nettica
+
+=item *
+
+Click on "dns - dns summary" from the Main Menu.
+
+=item *
+
+Click on "Advanced Search" (that is found to the right of the search box).
+
+=item *
+
+Leave the search field blank and push the "search" button.
+
+=item *
+
+Click on "Advanced CSV" at the bottom of the domain listing.
+
+=item *
+
+Save the file (by default called SearchExport.aspx) to a file in your working directory.
+
+=back
+
+=head1 SUPPORT
+
+Repository
+
+  http://github.com/Getty/p5-app-convertnettica2dnsmadeeasy
+  Pull request and additional contributors are welcome
+
+Issue Tracker
+
+  http://github.com/Getty/p5-app-convertnettica2dnsmadeeasy/issues
+
+=cut
+
+=head1 AUTHOR
+
+Torsten Raudssus <torsten@raudss.us>
+
+=head1 COPYRIGHT AND LICENSE
+
+This software is copyright (c) 2014 by Torsten Raudssus.
+
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.
+
+=cut
